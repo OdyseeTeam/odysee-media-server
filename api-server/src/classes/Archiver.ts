@@ -15,6 +15,9 @@ const transcoderPrivateKey = readFileSync('../../creds/ssh-key.ppk');
 const transcodeServer = 'transcoder.live.odysee.com';
 const transcoderUser = 'lbry';
 
+const crypto = require('crypto');
+const fs = require('fs');
+
 type IStreamService = 'odysee' | 'bitwave';
 
 export interface IArchiveTransmuxed {
@@ -135,7 +138,7 @@ class ArchiveManager {
 
     // Notify transcoding server of new replay
     console.log( `[${fileName}] Notifying Replay Transcode Server of new replay...` );
-    await this.notifyTranscodeServer( fileName, user );
+    await this.notifyTranscodeServer( fileName, fileLocation, user );
 
     // Delete FLV file after successful transmux on transcoding server
     console.log( `[${fileLocation}] will now be deleted...` );
@@ -583,19 +586,53 @@ class ArchiveManager {
     }
   }
 
-  async notifyTranscodeServer ( filename: string, channelId: string ) {
-    try {
-      const options = {
-        form: {
-          file_name: filename,
-          channel_id: channelId,
-          secret: 'TODO-USE-SOME-ENV-VAR', // TODO: use an env var here
-        },
-      };
-      await rp.post( 'https://transcoder.live.odysee.com/stream', options );
-    } catch ( error ) {
-      console.error( error.message );
-    }
+  async notifyTranscodeServer ( filename: string, fileLocation: string, channelId: string ): Promise<boolean> {
+    return new Promise<boolean>( ( resolve, reject ) => {
+      try {
+        const fileBuffer = fs.readFileSync(fileLocation);
+        const hashSum = crypto.createHash('sha256');
+        hashSum.update(fileBuffer);
+        const hex = hashSum.digest('hex');
+
+        const options = {
+          resolveWithFullResponse: true,
+          form: {
+            file_name: filename,
+            channel_id: channelId,
+            secret: 'TODO-USE-SOME-ENV-VAR', // TODO: use an env var here
+            sha256: hex,
+          },
+        };
+
+        const response = await rp.post( 'https://transcoder.live.odysee.com/stream', options )
+
+        if (response.statusCode >= 300) {
+          if (response.statusCode == 470) { // we're using this code to mean the upload to the server didn't work and we should try again
+            resolve(false)
+          } else {
+            try {
+              const parsed = JSON.parse(response.body)
+              parsed.statusCode = response.statusCode
+              reject(parsed)
+              return
+            } catch (error) {
+              reject({
+                statusCode: response.statusCode,
+                body: response.body
+              })
+              return
+            }
+          }
+        } else {
+          resolve(true);
+          return
+        }
+
+      } catch ( error ) {
+        console.error( error.message );
+        reject(error);
+      }
+    })
   }
 
   async deleteFLV ( file: string ) {
