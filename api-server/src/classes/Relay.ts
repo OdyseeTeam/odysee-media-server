@@ -75,11 +75,11 @@ class StreamRelay {
 
       screenshotFFmpeg
         .on( 'start', commandLine => {
-          relayLogger.info( chalk.yellowBright( `Starting preview thumbnail generator` ) );
+          // relayLogger.info( chalk.yellowBright( `Starting preview thumbnail generator` ) );
         })
 
         .on( 'end', () => {
-          relayLogger.info( chalk.green( `Created preview thumbnail for ${user}.` ) );
+          // relayLogger.info( chalk.green( `Created preview thumbnail for ${user}.` ) );
         })
 
         .on( 'error', ( error, stdout, stderr ) => {
@@ -99,6 +99,7 @@ class StreamRelay {
         });
       screenshotFFmpeg.run();
     };
+    //TODO: this is probably useless and wastes server resources.
     const thumbnailTimer = setInterval( () => generateThumbnail(), 60 * 1000 );
 
 
