@@ -123,68 +123,77 @@ class ArchiveManager {
     }
   }
 
-  async onArchiveEnd ( user: string, recordName: string, fileLocation: string ): Promise<void> {
+  async probeVideo(fileLocation: string): Promise<FfprobeData> {
+    return new Promise<FfprobeData>((res, reject) => {
+      ffprobe(fileLocation, (error, data: FfprobeData) => {
+        if (error) return reject(error);
+
+        return res(data);
+      });
+    })
+  }
+
+  //todo: actually return a promise
+  async onArchiveEnd(user: string, recordName: string, fileLocation: string): Promise<void> {
     // Log debug info
-    console.log( `[${recordName}] Replay for ${user} saved to ${fileLocation}.` );
+    console.log(`[${recordName}] Replay for ${user} saved to ${fileLocation}.`);
 
     // Extract filename from file location
-    // path.parse(fileLocation).base;
-    const fileName = path.basename( fileLocation );
+    const fileName = path.basename(fileLocation);
 
-    // Transfer FLV file to replay transcoder
-    console.log( `[${fileName}] Transferring FLV to Replay Transcode Server...` );
-
-    await this.transferArchive( fileLocation, fileName );
-
-    // Notify transcoding server of new replay
-    console.log( `[${fileName}] Notifying Replay Transcode Server of new replay...` );
-    await this.notifyTranscodeServer( fileName, fileLocation, user );
-
-    // Delete FLV file after successful transmux on transcoding server
-    console.log( `[${fileLocation}] will now be deleted...` );
-    await this.deleteFLV( fileLocation );
-
-    console.log( `[${fileName}] Replay processing compete!` );
-
-    return;
-
-
-    // --------------------------------------------
-    // --- USED TO TRANSMUX ON INGESTION SERVER ---
-    // --------------------------------------------
-
-    console.log( `[${recordName}] Converting FLV to MP4 and generating thumbnails...` );
-
-    // Transmux file
-    const result: IArchiveTransmuxed = await this.transmuxArchive( fileLocation, user, recordName );
-
-    // Log debug info (replay duration)
-    const rMin: number = Math.trunc( result.duration / 60 );
-    const rSec: number = Math.trunc( result.duration ) % 60;
-    console.log( `[${recordName}] Replay is ${rMin}:${rSec}` );
-
-    // disable processing replays longer than 6 hours
-    if ( rMin > 360 ) {
-      console.log(`Replay is too long to process: ${fileLocation}`);
+    //check size/length constraints
+    let stats = fs.statSync(fileLocation);
+    let fileSizeInBytes = stats.size;
+    if (fileSizeInBytes > 6 * 1024 * 1024 * 1024) {
+      console.error(`[archiver] ${fileName} is too big to process (${fileSizeInBytes / 1024 / 1024 / 1024}GB)`);
+      return;
+    }
+    if (fileSizeInBytes < 10 * 1024 * 1024) {
+      console.error(`[archiver] ${fileName} is too small to process (${fileSizeInBytes / 1024}KB)`);
+      return;
+    }
+    try {
+      let videoInfo = await this.probeVideo(fileLocation)
+      if (videoInfo.format.duration > 6 * 60 * 60) {
+        console.error(`[archiver] ${fileName} is too long to process (${videoInfo.format.duration * 60 * 60} Hours)`);
+        return;
+      }
+      if (videoInfo.format.duration < 30) {
+        console.error(`[archiver] ${fileName} is too short to process (${videoInfo.format.duration} Seconds)`);
+        return;
+      }
+    } catch (e) {
+      console.error(`[archiver] ${fileName} failed to probe: ${e}`);
       return;
     }
 
-    // use recordName to detect which platform's service was used
-    const service: IStreamService = recordName === 'odysee'? 'odysee' : 'bitwave';
-
-    // API call when completed
+    // Transfer FLV file to replay transcoder
+    console.log(`[archiver] ${fileName} transferring replay to the transcoder Server...`);
     try {
-      const options = {
-        form: {
-          channel: user,
-          service: service,
-          result: result,
-        },
-      };
-      await rp.post( 'http://api-server:3000/archive/end', options );
-    } catch ( error ) {
-      console.error( error.message );
+      await this.transferArchive(fileLocation, fileName);
+    } catch (e) {
+      console.error(`[archiver] ${fileName} failed to transfer to transcoder server: ${e}`);
+      return;
     }
+
+    // Notify transcoding server of new replay
+    console.log(`[archiver] ${fileName} notifying transcoder server of the new replay...`);
+    try {
+      let shouldRetry = await this.notifyTranscodeServer(fileName, fileLocation, user);
+      if (shouldRetry) {
+        return;// shouldRetry;
+      }
+    } catch (e) {
+      console.error(`[archiver] ${fileName} transcoder server failed to process the replay: ${e}`);
+      return;
+    }
+
+    // Delete FLV file after successful transmux on the transcoder server
+    console.log(`[archiver] ${fileName} will now be deleted...`);
+    await this.deleteFLV(fileLocation);
+
+    console.log(`[archiver] ${fileName} replay processing compete!`);
+    return;
   }
 
   async deleteArchive ( archiveId: string ) {
@@ -566,25 +575,31 @@ class ArchiveManager {
     };
   }
 
-  async transferArchive ( file: string, fileName: string ) {
-    try {
-      // Connect to other server
-      const scpClient = await Client({
-        host: transcodeServer,
-        port: 22,
-        username: transcoderUser,
-        privateKey: transcoderPrivateKey,
-      });
+  async transferArchive(file: string, fileName: string): Promise<boolean> {
+    return new Promise<boolean>(async (resolve, reject) => {
+      try {
+        // Connect to other server
+        const scpClient = await Client({
+          host: transcodeServer,
+          port: 22,
+          username: transcoderUser,
+          privateKey: transcoderPrivateKey,
+        });
 
-      // Transfer file via SCP
-      await scpClient.uploadFile( file, `videos_to_transcode/${fileName}` );
+        // Transfer file via SCP
+        await scpClient.uploadFile(file, `videos_to_transcode/${fileName}`);
 
-      // Close connection
-      scpClient.close();
-    } catch (error) {
-      console.error(error.message);
-    }
+        // Close connection
+        scpClient.close();
+        resolve(true);
+        return;
+      } catch (error) {
+        reject(error);
+        return;
+      }
+    })
   }
+
 
   async notifyTranscodeServer ( filename: string, fileLocation: string, channelId: string ): Promise<boolean> {
     return new Promise<boolean>( ( resolve, reject ) => {
