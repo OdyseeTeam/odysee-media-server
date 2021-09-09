@@ -27,7 +27,7 @@ RUN apt-get remove -y \
 RUN mkdir -p /tmp/hls && \
     mkdir -p /tmp/preview && \
     mkdir -p /tmp/transcode && \
-    mkdir -p /archives/rec
+    mkdir -p /archives/rec/failed
 
 # Install global npm packages
 RUN npm install -g typescript

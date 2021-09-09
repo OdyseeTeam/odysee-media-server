@@ -16,6 +16,7 @@ const transcoderUser = 'lbry';
 
 const crypto = require('crypto');
 const fs = require('fs');
+const fsPromises = fs.promises;
 
 type IStreamService = 'odysee' | 'bitwave';
 
@@ -132,59 +133,88 @@ class ArchiveManager {
     })
   }
 
-  async onArchiveEnd(user: string, recordName: string, fileLocation: string): Promise<void> {
-    // Log debug info
+  async handleReplayTransmuxing(user: string, recordName: string, fileLocation: string): Promise<boolean> {
+    return new Promise<boolean>((async (resolve, reject) => {
+
+      const fileName = path.basename(fileLocation);
+
+      //check size/length constraints
+      let stats = fs.statSync(fileLocation);
+      let fileSizeInBytes = stats.size;
+      if (fileSizeInBytes > 6 * 1024 * 1024 * 1024) {
+        console.error(`[archiver] ${fileName} is too big to process (${fileSizeInBytes / 1024 / 1024 / 1024}GB)`);
+        resolve(false)
+        return;
+      }
+      if (fileSizeInBytes < 10 * 1024 * 1024) {
+        console.error(`[archiver] ${fileName} is too small to process (${fileSizeInBytes / 1024}KB)`);
+        resolve(false)
+        return;
+      }
+      try {
+        let videoInfo = await this.probeVideo(fileLocation)
+        if (videoInfo.format.duration > 6 * 60 * 60) {
+          console.error(`[archiver] ${fileName} is too long to process (${videoInfo.format.duration * 60 * 60} Hours)`);
+          resolve(false)
+          return;
+        }
+        if (videoInfo.format.duration < 30) {
+          console.error(`[archiver] ${fileName} is too short to process (${videoInfo.format.duration} Seconds)`);
+          resolve(false)
+          return;
+        }
+      } catch (e) {
+        console.error(`[archiver] ${fileName} failed to probe: ${e}`);
+        reject(`[archiver] ${fileName} failed to probe: ${e}`)
+        return;
+      }
+
+      // Transfer FLV file to replay transcoder
+      console.log(`[archiver] ${fileName} transferring replay to the transcoder Server...`);
+      try {
+        await this.transferArchive(fileLocation, fileName);
+      } catch (e) {
+        console.error(`[archiver] ${fileName} failed to transfer to transcoder server: ${e}`);
+        resolve(true)
+        return;
+      }
+
+      // Notify transcoding server of new replay
+      console.log(`[archiver] ${fileName} notifying transcoder server of the new replay...`);
+      try {
+        let shouldRetry = await this.notifyTranscodeServer(fileName, fileLocation, user);
+        resolve(shouldRetry)
+      } catch (e) {
+        console.error(`[archiver] ${fileName} transcoder server failed to process the replay: ${e}`);
+        reject(`[archiver] ${fileName} transcoder server failed to process the replay: ${e}`)
+        return;
+      }
+    }))
+  }
+
+  async onArchiveEnd(user: string, recordName: string, fileLocation: string) {
+    const fileName = path.basename(fileLocation);
     console.log(`[${recordName}] Replay for ${user} saved to ${fileLocation}.`);
 
-    // Extract filename from file location
-    const fileName = path.basename(fileLocation);
-
-    //check size/length constraints
-    let stats = fs.statSync(fileLocation);
-    let fileSizeInBytes = stats.size;
-    if (fileSizeInBytes > 6 * 1024 * 1024 * 1024) {
-      console.error(`[archiver] ${fileName} is too big to process (${fileSizeInBytes / 1024 / 1024 / 1024}GB)`);
-      return;
-    }
-    if (fileSizeInBytes < 10 * 1024 * 1024) {
-      console.error(`[archiver] ${fileName} is too small to process (${fileSizeInBytes / 1024}KB)`);
-      return;
-    }
-    try {
-      let videoInfo = await this.probeVideo(fileLocation)
-      if (videoInfo.format.duration > 6 * 60 * 60) {
-        console.error(`[archiver] ${fileName} is too long to process (${videoInfo.format.duration * 60 * 60} Hours)`);
-        return;
+    let shouldRetry = true;
+    for (let i = 0; i < 3 && shouldRetry; i++) {
+      try {
+        shouldRetry = await this.handleReplayTransmuxing(user, recordName, fileLocation)
+      } catch (e) {
+        shouldRetry = true;
+        break
       }
-      if (videoInfo.format.duration < 30) {
-        console.error(`[archiver] ${fileName} is too short to process (${videoInfo.format.duration} Seconds)`);
-        return;
+    }
+    if (shouldRetry) {
+      console.error(`[archiver] ${fileName} replay failed to process. Giving up (but retaining the file)`)
+      try {
+        await fsPromises.rename(fileLocation, `/archives/rec/failed/${fileName}`)
+      } catch (e) {
+        console.error(`[archiver] ${fileName} failed to move to failed directory: ${e}`)
       }
-    } catch (e) {
-      console.error(`[archiver] ${fileName} failed to probe: ${e}`);
-      return;
+      return
     }
 
-    // Transfer FLV file to replay transcoder
-    console.log(`[archiver] ${fileName} transferring replay to the transcoder Server...`);
-    try {
-      await this.transferArchive(fileLocation, fileName);
-    } catch (e) {
-      console.error(`[archiver] ${fileName} failed to transfer to transcoder server: ${e}`);
-      return;
-    }
-
-    // Notify transcoding server of new replay
-    console.log(`[archiver] ${fileName} notifying transcoder server of the new replay...`);
-    try {
-      let shouldRetry = await this.notifyTranscodeServer(fileName, fileLocation, user);
-      if (shouldRetry) {
-        return;// shouldRetry;
-      }
-    } catch (e) {
-      console.error(`[archiver] ${fileName} transcoder server failed to process the replay: ${e}`);
-      return;
-    }
 
     // Delete FLV file after successful transmux on the transcoder server
     console.log(`[archiver] ${fileName} will now be deleted...`);
