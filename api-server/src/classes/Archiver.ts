@@ -40,6 +40,13 @@ interface IRecorder {
   process: any;
 }
 
+enum RetryState {
+  RETRY,
+  RETRY_NOUPLOAD,
+  NORETRY_NODELETE,
+  NORETRY_DELETE,
+}
+
 class ArchiveManager {
   public recorders: IRecorder[];
 
@@ -133,8 +140,8 @@ class ArchiveManager {
     })
   }
 
-  async handleReplayTransmuxing(user: string, recordName: string, fileLocation: string): Promise<boolean> {
-    return new Promise<boolean>((async (resolve, reject) => {
+  async handleReplayTransmuxing(user: string, recordName: string, fileLocation: string, shouldUpload: boolean): Promise<RetryState> {
+    return new Promise<RetryState>((async (resolve, reject) => {
 
       const fileName = path.basename(fileLocation);
 
@@ -143,24 +150,24 @@ class ArchiveManager {
       let fileSizeInBytes = stats.size;
       if (fileSizeInBytes > 6 * 1024 * 1024 * 1024) {
         console.error(`[archiver] ${fileName} is too big to process (${fileSizeInBytes / 1024 / 1024 / 1024}GB)`);
-        resolve(false)
+        resolve(RetryState.NORETRY_DELETE);
         return;
       }
       if (fileSizeInBytes < 10 * 1024 * 1024) {
         console.error(`[archiver] ${fileName} is too small to process (${fileSizeInBytes / 1024}KB)`);
-        resolve(false)
+        resolve(RetryState.NORETRY_DELETE);
         return;
       }
       try {
         let videoInfo = await this.probeVideo(fileLocation)
         if (videoInfo.format.duration > 6 * 60 * 60) {
           console.error(`[archiver] ${fileName} is too long to process (${videoInfo.format.duration * 60 * 60} Hours)`);
-          resolve(false)
+          resolve(RetryState.NORETRY_DELETE);
           return;
         }
         if (videoInfo.format.duration < 30) {
           console.error(`[archiver] ${fileName} is too short to process (${videoInfo.format.duration} Seconds)`);
-          resolve(false)
+          resolve(RetryState.NORETRY_DELETE);
           return;
         }
       } catch (e) {
@@ -170,13 +177,15 @@ class ArchiveManager {
       }
 
       // Transfer FLV file to replay transcoder
-      console.log(`[archiver] ${fileName} transferring replay to the transcoder Server...`);
-      try {
-        await this.transferArchive(fileLocation, fileName);
-      } catch (e) {
-        console.error(`[archiver] ${fileName} failed to transfer to transcoder server: ${e}`);
-        resolve(true)
-        return;
+      if (shouldUpload) {
+        console.log(`[archiver] ${fileName} transferring replay to the transcoder Server...`);
+        try {
+          await this.transferArchive(fileLocation, fileName);
+        } catch (e) {
+          console.error(`[archiver] ${fileName} failed to transfer to transcoder server: ${e}`);
+          resolve(RetryState.RETRY);
+          return;
+        }
       }
 
       // Notify transcoding server of new replay
@@ -196,23 +205,36 @@ class ArchiveManager {
     const fileName = path.basename(fileLocation);
     console.log(`[${recordName}] Replay for ${user} saved to ${fileLocation}.`);
 
-    let shouldRetry = true;
-    for (let i = 0; i < 3 && shouldRetry; i++) {
-      try {
-        shouldRetry = await this.handleReplayTransmuxing(user, recordName, fileLocation)
-      } catch (e) {
-        shouldRetry = true;
-        break
+    let state = RetryState.RETRY;
+    let retries = 0;
+    while (state === RetryState.RETRY || state === RetryState.RETRY_NOUPLOAD) {
+      if (retries >= 3) {
+        console.log(`[archiver] ${fileName} maximum number of retries reached (3). Giving up.`);
+        break;
       }
+      try {
+        state = await this.handleReplayTransmuxing(user, recordName, fileLocation, state === RetryState.RETRY)
+      } catch (e) {
+        console.error(`[archiver] ${fileName} failed to process a replay for unexpected reasons: ${e}`);
+        state = RetryState.RETRY;
+      }
+      retries++;
     }
-    if (shouldRetry) {
-      console.error(`[archiver] ${fileName} replay failed to process. Giving up (but retaining the file)`)
-      try {
-        await fsPromises.rename(fileLocation, `/archives/rec/failed/${fileName}`)
-      } catch (e) {
-        console.error(`[archiver] ${fileName} failed to move to failed directory: ${e}`)
-      }
-      return
+
+    switch (state) {
+      case RetryState.RETRY_NOUPLOAD:
+      case RetryState.RETRY:
+      case RetryState.NORETRY_NODELETE:
+        console.error(`[archiver] ${fileName} replay failed to process. Giving up (but retaining the file)`);
+        try {
+          await fsPromises.rename(fileLocation, `/archives/rec/failed/${fileName}`);
+        } catch (e) {
+          console.error(`[archiver] ${fileName} failed to move to failed directory: ${e}`);
+        }
+        return;
+      //this is sort of the default state, it might indicate successes or hard failures that we don't want to ever retry
+      case RetryState.NORETRY_DELETE:
+        break;
     }
 
 
@@ -285,8 +307,9 @@ class ArchiveManager {
     })
   }
 
-  async notifyTranscodeServer(filename: string, fileLocation: string, channelId: string): Promise<boolean> {
-    return new Promise<boolean>(async (resolve, reject) => {
+
+  async notifyTranscodeServer(filename: string, fileLocation: string, channelId: string): Promise<RetryState> {
+    return new Promise<RetryState>(async (resolve, reject) => {
       try {
         const fileBuffer = fs.readFileSync(fileLocation);
         const hashSum = crypto.createHash('sha256');
@@ -304,29 +327,44 @@ class ArchiveManager {
         };
 
         const response = await rp.post('https://transcoder.live.odysee.com/stream', options)
-
+        /*
+        470 - retry with upload
+        471 - retry without re-uploading
+        472 - do not retry and do not discard video
+        473 - do not retry and discard video
+         */
         if (response.statusCode >= 300) {
-          if (response.statusCode == 470) { // we're using this code to mean the upload to the server didn't work and we should try again
-            resolve(false)
-          } else {
-            try {
-              const parsed = JSON.parse(response.body)
-              parsed.statusCode = response.statusCode
-              reject(parsed)
-              return
-            } catch (error) {
-              reject({
-                statusCode: response.statusCode,
-                body: response.body
-              })
-              return
-            }
+          switch (response.statusCode) {
+            case 470:
+              resolve(RetryState.RETRY);
+              break;
+            case 471:
+              resolve(RetryState.RETRY_NOUPLOAD);
+              break;
+            case 472:
+              resolve(RetryState.NORETRY_NODELETE);
+              break;
+            case 473:
+              resolve(RetryState.NORETRY_DELETE);
+              break;
+            default:
+              try {
+                const parsed = JSON.parse(response.body)
+                parsed.statusCode = response.statusCode
+                reject(parsed)
+                return
+              } catch (error) {
+                reject({
+                  statusCode: response.statusCode,
+                  body: response.body
+                })
+                return
+              }
           }
         } else {
-          resolve(true);
+          resolve(RetryState.NORETRY_DELETE);
           return
         }
-
       } catch (error) {
         console.error(error.message);
         reject(error);
