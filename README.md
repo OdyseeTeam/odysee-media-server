@@ -1,4 +1,4 @@
-# Bitwave Media Server
+# Odysee Media Server
 
 An RTMP ingestion server + API server packaged as docker containers for managing and controlling streams, restreams, and archives.
 

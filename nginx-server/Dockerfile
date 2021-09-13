@@ -4,9 +4,9 @@ FROM $IMAGE as builder
 
 MAINTAINER dispatch <admin@bitwave.tv>
 
-COPY --from=bitwavetv/skylight:dev /usr/local/bin /usr/local/bin
-COPY --from=bitwavetv/skylight:dev /usr/local/nginx /usr/local/nginx
-COPY --from=bitwavetv/skylight:dev /usr/local/lib /usr/local/lib
+COPY --from=lbry/skylight:dev /usr/local/bin /usr/local/bin
+COPY --from=lbry/skylight:dev /usr/local/nginx /usr/local/nginx
+COPY --from=lbry/skylight:dev /usr/local/lib /usr/local/lib
 
 RUN apt-get update && \
     apt-get install -y \
