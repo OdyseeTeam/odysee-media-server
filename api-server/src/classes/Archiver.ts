@@ -1,13 +1,12 @@
 // Created by xander on 12/30/2019
 
 import * as admin from 'firebase-admin';
-import { promises as fsp, readFileSync } from 'fs';
+import {promises as fsp, readFileSync} from 'fs';
 import * as path from 'path';
 import * as chalk from 'chalk';
 import * as FfmpegCommand from 'fluent-ffmpeg';
-import { ffprobe, FfprobeData, FfprobeStream } from 'fluent-ffmpeg';
+import {ffprobe, FfprobeData, FfprobeStream} from 'fluent-ffmpeg';
 
-import { stackpaths3 } from '../services/s3Storage';
 import * as rp from 'request-promise';
 import Client from 'node-scp';
 
@@ -15,12 +14,16 @@ const transcoderPrivateKey = readFileSync('../../creds/ssh-key.ppk');
 const transcodeServer = 'transcoder.live.odysee.com';
 const transcoderUser = 'lbry';
 
+const crypto = require('crypto');
+const fs = require('fs');
+const fsPromises = fs.promises;
+
 type IStreamService = 'odysee' | 'bitwave';
 
 export interface IArchiveTransmuxed {
   file: string;
   key: string;
-  type: 'flv'|'mp4';
+  type: 'flv' | 'mp4';
   duration: number;
   fileSize: number;
   thumbnails: string[];
@@ -37,69 +40,76 @@ interface IRecorder {
   process: any;
 }
 
+enum RetryState {
+  RETRY,
+  RETRY_NOUPLOAD,
+  NORETRY_NODELETE,
+  NORETRY_DELETE,
+}
+
 class ArchiveManager {
   public recorders: IRecorder[];
 
-  constructor () {
+  constructor() {
     this.recorders = [];
   }
 
-  async startArchive ( user: string, recordName: string ) {
+  async startArchive(user: string, recordName: string) {
     const id = `${user}-${recordName}`;
-    const inputStream  = `rtmp://nginx-server/live/${user}`;
+    const inputStream = `rtmp://nginx-server/live/${user}`;
     const outputFile = `/archives/rec/${user}_${recordName}_${Date.now()}.flv`
 
     // Check for existing recorder with same user ane name
-    const recorders = this.recorders.find( t => t.id.toLowerCase() === id.toLowerCase() );
-    if ( recorders && recorders.process !== null ) {
-      console.log( `${id} is already being recorded.` );
+    const recorders = this.recorders.find(t => t.id.toLowerCase() === id.toLowerCase());
+    if (recorders && recorders.process !== null) {
+      console.log(`${id} is already being recorded.`);
       return;
     }
 
-    console.log( `starting recording: ${id}` );
+    console.log(`starting recording: ${id}`);
 
-    return new Promise<string>( ( res ) => {
+    return new Promise<string>((res) => {
       // Create Command
-      const ffmpeg = FfmpegCommand({ stdoutLines: 3 });
+      const ffmpeg = FfmpegCommand({stdoutLines: 3});
 
-      ffmpeg.input( inputStream );
+      ffmpeg.input(inputStream);
       ffmpeg.inputOptions([
         '-err_detect ignore_err',
         '-ignore_unknown',
         '-fflags nobuffer+genpts+igndts',
       ]);
 
-      ffmpeg.output( outputFile );
+      ffmpeg.output(outputFile);
       ffmpeg.outputOptions([
         '-c copy',
       ]);
 
       // Event handlers
       ffmpeg
-        .on( 'start', commandLine => {
-          console.log( chalk.greenBright ( `[${recordName}] Started recording stream: ${user}` ) );
-          console.log( commandLine );
-          res( outputFile );
+        .on('start', commandLine => {
+          console.log(chalk.greenBright(`[${recordName}] Started recording stream: ${user}`));
+          console.log(commandLine);
+          res(outputFile);
         })
 
-        .on( 'end', () => {
-          console.log( chalk.greenBright ( `[${recordName}] Ended stream recording for: ${user}` ) );
-          this.recorders = this.recorders.filter( t => t.id.toLowerCase() !== id.toLowerCase() );
-          this.onArchiveEnd( user, recordName, outputFile );
+        .on('end', () => {
+          console.log(chalk.greenBright(`[${recordName}] Ended stream recording for: ${user}`));
+          this.recorders = this.recorders.filter(t => t.id.toLowerCase() !== id.toLowerCase());
+          this.onArchiveEnd(user, recordName, outputFile);
         })
 
-        .on( 'error', ( error, stdout, stderr ) => {
-          console.log( error );
-          console.log( stdout );
-          console.log( stderr );
+        .on('error', (error, stdout, stderr) => {
+          console.log(error);
+          console.log(stdout);
+          console.log(stderr);
 
-          if ( error.message.includes('SIGKILL') ) {
-            console.error( chalk.redBright ( `${user}: Stream recording stopped!` ) );
+          if (error.message.includes('SIGKILL')) {
+            console.error(chalk.redBright(`${user}: Stream recording stopped!`));
           } else {
-            console.error( chalk.redBright ( `${user}: Stream recording error!` ) );
+            console.error(chalk.redBright(`${user}: Stream recording error!`));
           }
 
-          this.recorders = this.recorders.filter( t => t.id.toLowerCase() !== id.toLowerCase() );
+          this.recorders = this.recorders.filter(t => t.id.toLowerCase() !== id.toLowerCase());
         })
 
       // Start
@@ -107,89 +117,141 @@ class ArchiveManager {
     });
   }
 
-  async stopArchive ( user: string, recordName: string ) {
+  async stopArchive(user: string, recordName: string) {
     const id = `${user}-${recordName}`;
-    const recorders = this.recorders.find( t => t.id.toLowerCase() === id.toLowerCase() );
-    if ( recorders.process !== null ) {
-      recorders.process.kill( 'SIGKILL' );
-      console.log( `Stopping recording for: ${id}` );
+    const recorders = this.recorders.find(t => t.id.toLowerCase() === id.toLowerCase());
+    if (recorders.process !== null) {
+      recorders.process.kill('SIGKILL');
+      console.log(`Stopping recording for: ${id}`);
       return true;
     } else {
-      console.log( `Not recording: ${id}` )
+      console.log(`Not recording: ${id}`)
       return false;
     }
   }
 
-  async onArchiveEnd ( user: string, recordName: string, fileLocation: string ): Promise<void> {
-    // Log debug info
-    console.log( `[${recordName}] Replay for ${user} saved to ${fileLocation}.` );
+  async probeVideo(fileLocation: string): Promise<FfprobeData> {
+    return new Promise<FfprobeData>((res, reject) => {
+      ffprobe(fileLocation, (error, data: FfprobeData) => {
+        if (error) return reject(error);
 
-    // Extract filename from file location
-    // path.parse(fileLocation).base;
-    const fileName = path.basename( fileLocation );
-
-    // Transfer FLV file to replay transcoder
-    console.log( `[${fileName}] Transferring FLV to Replay Transcode Server...` );
-
-    await this.transferArchive( fileLocation, fileName );
-
-    // Notify transcoding server of new replay
-    console.log( `[${fileName}] Notifying Replay Transcode Server of new replay...` );
-    await this.notifyTranscodeServer( fileName, user );
-
-    // Delete FLV file after successful transmux on transcoding server
-    console.log( `[${fileLocation}] will now be deleted...` );
-    await this.deleteFLV( fileLocation );
-
-    console.log( `[${fileName}] Replay processing compete!` );
-
-    return;
-
-
-    // --------------------------------------------
-    // --- USED TO TRANSMUX ON INGESTION SERVER ---
-    // --------------------------------------------
-
-    console.log( `[${recordName}] Converting FLV to MP4 and generating thumbnails...` );
-
-    // Transmux file
-    const result: IArchiveTransmuxed = await this.transmuxArchive( fileLocation, user, recordName );
-
-    // Log debug info (replay duration)
-    const rMin: number = Math.trunc( result.duration / 60 );
-    const rSec: number = Math.trunc( result.duration ) % 60;
-    console.log( `[${recordName}] Replay is ${rMin}:${rSec}` );
-
-    // disable processing replays longer than 6 hours
-    if ( rMin > 360 ) {
-      console.log(`Replay is too long to process: ${fileLocation}`);
-      return;
-    }
-
-    // use recordName to detect which platform's service was used
-    const service: IStreamService = recordName === 'odysee'? 'odysee' : 'bitwave';
-
-    // API call when completed
-    try {
-      const options = {
-        form: {
-          channel: user,
-          service: service,
-          result: result,
-        },
-      };
-      await rp.post( 'http://api-server:3000/archive/end', options );
-    } catch ( error ) {
-      console.error( error.message );
-    }
+        return res(data);
+      });
+    })
   }
 
-  async deleteArchive ( archiveId: string ) {
+  async handleReplayTransmuxing(user: string, recordName: string, fileLocation: string, shouldUpload: boolean): Promise<RetryState> {
+    return new Promise<RetryState>((async (resolve, reject) => {
+
+      const fileName = path.basename(fileLocation);
+
+      //check size/length constraints
+      let stats = fs.statSync(fileLocation);
+      let fileSizeInBytes = stats.size;
+      if (fileSizeInBytes > 6 * 1024 * 1024 * 1024) {
+        console.error(`[archiver] ${fileName} is too big to process (${fileSizeInBytes / 1024 / 1024 / 1024}GB)`);
+        resolve(RetryState.NORETRY_DELETE);
+        return;
+      }
+      if (fileSizeInBytes < 10 * 1024 * 1024) {
+        console.error(`[archiver] ${fileName} is too small to process (${fileSizeInBytes / 1024}KB)`);
+        resolve(RetryState.NORETRY_DELETE);
+        return;
+      }
+      try {
+        let videoInfo = await this.probeVideo(fileLocation)
+        if (videoInfo.format.duration > 6 * 60 * 60) {
+          console.error(`[archiver] ${fileName} is too long to process (${videoInfo.format.duration * 60 * 60} Hours)`);
+          resolve(RetryState.NORETRY_DELETE);
+          return;
+        }
+        if (videoInfo.format.duration < 30) {
+          console.error(`[archiver] ${fileName} is too short to process (${videoInfo.format.duration} Seconds)`);
+          resolve(RetryState.NORETRY_DELETE);
+          return;
+        }
+      } catch (e) {
+        console.error(`[archiver] ${fileName} failed to probe: ${e}`);
+        reject(`[archiver] ${fileName} failed to probe: ${e}`)
+        return;
+      }
+
+      // Transfer FLV file to replay transcoder
+      if (shouldUpload) {
+        console.log(`[archiver] ${fileName} transferring replay to the transcoder Server...`);
+        try {
+          await this.transferArchive(fileLocation, fileName);
+        } catch (e) {
+          console.error(`[archiver] ${fileName} failed to transfer to transcoder server: ${e}`);
+          resolve(RetryState.RETRY);
+          return;
+        }
+      }
+
+      // Notify transcoding server of new replay
+      console.log(`[archiver] ${fileName} notifying transcoder server of the new replay...`);
+      try {
+        let shouldRetry = await this.notifyTranscodeServer(fileName, fileLocation, user);
+        resolve(shouldRetry)
+      } catch (e) {
+        console.error(`[archiver] ${fileName} transcoder server failed to process the replay: ${e}`);
+        reject(`[archiver] ${fileName} transcoder server failed to process the replay: ${e}`)
+        return;
+      }
+    }))
+  }
+
+  async onArchiveEnd(user: string, recordName: string, fileLocation: string) {
+    const fileName = path.basename(fileLocation);
+    console.log(`[${recordName}] Replay for ${user} saved to ${fileLocation}.`);
+
+    let state = RetryState.RETRY;
+    let retries = 0;
+    while (state === RetryState.RETRY || state === RetryState.RETRY_NOUPLOAD) {
+      if (retries >= 3) {
+        console.log(`[archiver] ${fileName} maximum number of retries reached (3). Giving up.`);
+        break;
+      }
+      try {
+        state = await this.handleReplayTransmuxing(user, recordName, fileLocation, state === RetryState.RETRY)
+      } catch (e) {
+        console.error(`[archiver] ${fileName} failed to process a replay for unexpected reasons: ${e}`);
+        state = RetryState.RETRY;
+      }
+      retries++;
+    }
+
+    switch (state) {
+      case RetryState.RETRY_NOUPLOAD:
+      case RetryState.RETRY:
+      case RetryState.NORETRY_NODELETE:
+        console.error(`[archiver] ${fileName} replay failed to process. Giving up (but retaining the file)`);
+        try {
+          await fsPromises.rename(fileLocation, `/archives/rec/failed/${fileName}`);
+        } catch (e) {
+          console.error(`[archiver] ${fileName} failed to move to failed directory: ${e}`);
+        }
+        return;
+      //this is sort of the default state, it might indicate successes or hard failures that we don't want to ever retry
+      case RetryState.NORETRY_DELETE:
+        break;
+    }
+
+
+    // Delete FLV file after successful transmux on the transcoder server
+    console.log(`[archiver] ${fileName} will now be deleted...`);
+    await this.deleteFLV(fileLocation);
+
+    console.log(`[archiver] ${fileName} replay processing compete!`);
+    return;
+  }
+
+  async deleteArchive(archiveId: string) {
     try {
       // Create db reference to archive
       const archiveReference = admin.firestore()
-        .collection( 'archives' )
-        .doc( archiveId );
+        .collection('archives')
+        .doc(archiveId);
 
       const archiveDocument = await archiveReference.get();
 
@@ -197,12 +259,12 @@ class ArchiveManager {
       const archive = archiveDocument.data();
 
       // Delete archive file
-      await fsp.unlink( archive.file );
-      console.log( `${archive._username}'s archive deleted: ${archiveId}` );
+      await fsp.unlink(archive.file);
+      console.log(`${archive._username}'s archive deleted: ${archiveId}`);
 
       // Flag archive as deleted
       await archiveReference
-        .update( { deleted: true } );
+        .update({deleted: true});
 
       // Return results
       return {
@@ -210,402 +272,114 @@ class ArchiveManager {
         message: `archive deleted: ${archiveId}`,
       };
 
-    } catch ( error ) {
+    } catch (error) {
       // An error occurred while attempting to delete an archive
-      console.log( error );
+      console.log(error);
       return {
         success: false,
         message: error.message,
       };
-
     }
   }
 
-  async transmuxArchive ( file: string, channel: string, recordName: string ): Promise<IArchiveTransmuxed> {
-    const transmuxAsync = ( file: string ): Promise<string> => new Promise( ( res, reject ) => {
-      // Change flv to mp4
-      const outFile = file.replace( /\.flv$/i, '.mp4' );
-
-      const ffmpeg = FfmpegCommand();
-      ffmpeg.input( file );
-      ffmpeg.inputOptions([
-        '-err_detect ignore_err',
-        '-ignore_unknown',
-        '-stats',
-      ]);
-
-      ffmpeg.output( outFile );
-      ffmpeg.outputOptions([
-        '-codec:a copy', // Audio (copy)
-        '-codec:v copy', // Video (copy)
-
-        // Video (transcode)
-        // '-c:v libx264',
-        // '-preset:v superfast', // preset
-        // '-crf 35', // Quality level
-
-      ]);
-
-      ffmpeg.renice( 5 );
-
-      ffmpeg
-        .on('start', command => {
-          console.log( chalk.greenBright(`Starting archive transmux.`) );
-        })
-
-        .on( 'progress', progress => {
-          console.log( progress );
-        })
-
-        .on('end', ( stdout, stderr ) => {
-          console.log( chalk.greenBright(`Finished archive transmux.`) );
-          return res ( outFile );
-        })
-
-        .on( 'error', ( error, stdout, stderr ) => {
-          console.log( chalk.redBright(`Error during archive transmux.`) );
-
-          console.log( error );
-          console.log( stdout );
-          console.log( stderr );
-
-          return reject( error );
+  async transferArchive(file: string, fileName: string): Promise<boolean> {
+    return new Promise<boolean>(async (resolve, reject) => {
+      try {
+        // Connect to other server
+        const scpClient = await Client({
+          host: transcodeServer,
+          port: 22,
+          username: transcoderUser,
+          privateKey: transcoderPrivateKey,
         });
 
-      ffmpeg.run();
-    });
+        // Transfer file via SCP
+        await scpClient.uploadFile(file, `videos_to_transcode/${fileName}`);
 
-    const probeTransmuxedFile = ( file: string ): Promise<object> => new Promise ( ( res, reject ) => {
-      ffprobe( file, ( error, data: FfprobeData ) => {
-        if ( error ) return reject( error );
-
-        // Video Data
-        const videoData = data.streams.find(stream => stream.codec_type === 'video' );
-        if ( videoData ) {
-          // console.log( videoData );
-        }
-
-        // Audio Data
-        const audioData = data.streams.find(stream => stream.codec_type === 'audio' );
-        if ( audioData ) {
-          // console.log( audioData );
-        }
-
-        return res({ video: videoData, audio: audioData, format: data.format });
-      });
-    });
-
-    const generateScreenshots = ( file: string, screenshots: number ): Promise<string[]> => new Promise ( async (res, reject) => {
-
-      const takeScreenshots = ( file, count ): Promise<string[]> => {
-        const folder = path.dirname( file );
-        // Take single screenshot, hopefully with the seek ffmpeg command
-        const takeSingleScreenshot = async ( file, timestamp, index ) => {
-          return await new Promise( ( res, reject ) => {
-            let filename = null;
-            const ffmpeg = FfmpegCommand;
-            ffmpeg(file)
-              .renice( 5 )
-
-              .on("start", ( command ) => {
-                console.log(`[START] taking screenshot: ${index} at ${timestamp}`);
-                console.log( `[START] Screenshot command:`, command );
-              })
-
-              .on("end", () => {
-                console.log(`[END] screenshot #${index} at: ${timestamp} complete.`);
-                if ( filename ){
-                  return res( filename );
-                } else {
-                  console.error( `Missing screenshot filename!` );
-                  res( '' );
-                }
-              })
-
-              .screenshots({
-                count: 1,
-                timemarks: [timestamp],
-                filename: `%b_${index}.jpg`,
-                folder: folder,
-              })
-
-              .on('filenames', ( outputFilenames: string[] ) => {
-                console.log( `[FILES] Took screenshot:`, outputFilenames );
-                const filenames = outputFilenames.map( f => `${folder}/${f}` );
-                filename = filenames[0];
-              })
-
-              .on( 'error', ( error, stdout, stderr ) => {
-                console.log( chalk.redBright(`[ERROR] Error generating screenshots.`) );
-
-                console.log( error );
-                console.log( stdout );
-                console.log( stderr );
-
-                return reject( error );
-              });
-          });
-        }
-
-        // const count = 10;
-        const timestamps = [];
-        const startPositionPercent = 5;
-        const endPositionPercent = 95;
-        const addPercent = ( endPositionPercent - startPositionPercent ) / ( count - 1 );
-
-        for ( let i = 0; i < count; i++ ) {
-          const time = startPositionPercent + addPercent * i;
-          timestamps.push( `${time}%` );
-        }
-
-        return new Promise ( async ( res, reject ) => {
-          const files = [];
-          await Promise.all (
-            timestamps.map( async (timestamp, index) => {
-              const screenshotFile = await takeSingleScreenshot( file, timestamp, index );
-              files.push( screenshotFile );
-            })
-          );
-          res( files );
-        });
+        // Close connection
+        scpClient.close();
+        resolve(true);
+        return;
+      } catch (error) {
+        reject(error);
+        return;
       }
-
-      const screenshotFiles = await takeScreenshots( file, screenshots );
-      console.log( `Screenshots finished!\n`, screenshotFiles );
-
-      res( screenshotFiles );
-    });
-
-    // use recordName to detect which platform's service was used
-    const service: IStreamService = recordName === 'odysee'? 'odysee' : 'bitwave';
-
-    // Transmux FLV -> mp4
-    let transmuxFile: string = null;
-    try {
-      transmuxFile = await transmuxAsync( file );
-    } catch ( error ) {
-      console.log( chalk.redBright( `Archive transmux failed... Bailing early.` ) );
-      console.log( error );
-      return {
-        file: file,
-        key: file,
-        type: 'flv',
-        duration: 0,
-        thumbnails: [],
-        channel: channel,
-        service: service,
-        fileSize: 0,
-        ffprobe: {
-          videoData: [],
-          audioData: [],
-        },
-      };
-    }
-
-    if ( !transmuxFile ) {
-      console.log( chalk.redBright( `Archive transmux failed... Bailing early.` ) );
-      return {
-        file: file,
-        key: file,
-        type: 'flv',
-        duration: 0,
-        thumbnails: [],
-        channel: channel,
-        service: service,
-        fileSize: 0,
-        ffprobe: {
-          videoData: [],
-          audioData: [],
-        },
-      };
-    }
+    })
+  }
 
 
-    // Probe resulting mp4
-    let transmuxData = null;
-    try {
-      transmuxData = await probeTransmuxedFile( transmuxFile );
-    } catch ( error ) {
-      console.log( chalk.redBright( `Archive transmux probe failed... Bailing early.` ) );
-      console.log( error );
-      return {
-        file: file,
-        key: file,
-        type: 'flv',
-        duration: 0,
-        thumbnails: [],
-        channel: channel,
-        service: service,
-        fileSize: 0,
-        ffprobe: {
-          videoData: [],
-          audioData: [],
-        },
-      };
-    }
+  async notifyTranscodeServer(filename: string, fileLocation: string, channelId: string): Promise<RetryState> {
+    return new Promise<RetryState>(async (resolve, reject) => {
+      try {
+        const fileBuffer = fs.readFileSync(fileLocation);
+        const hashSum = crypto.createHash('sha256');
+        hashSum.update(fileBuffer);
+        const hex = hashSum.digest('hex');
 
-    if ( !transmuxData ) {
-      console.log( `Archive transmux probe failed... Bailing early.` );
-      return {
-        file: file,
-        key: file,
-        type: 'flv',
-        duration: 0,
-        thumbnails: [],
-        channel: channel,
-        service: service,
-        fileSize: 0,
-        ffprobe: {
-          videoData: [],
-          audioData: [],
-        },
-      };
-    }
+        const options = {
+          resolveWithFullResponse: true,
+          form: {
+            file_name: filename,
+            channel_id: channelId,
+            secret: 'TODO-USE-SOME-ENV-VAR', // TODO: use an env var here
+            sha256: hex,
+          },
+        };
 
+        const response = await rp.post('https://transcoder.live.odysee.com/stream', options)
+        /*
+        470 - retry with upload
+        471 - retry without re-uploading
+        472 - do not retry and do not discard video
+        473 - do not retry and discard video
+         */
+        if (response.statusCode >= 300) {
+          switch (response.statusCode) {
+            case 470:
+              resolve(RetryState.RETRY);
+              break;
+            case 471:
+              resolve(RetryState.RETRY_NOUPLOAD);
+              break;
+            case 472:
+              resolve(RetryState.NORETRY_NODELETE);
+              break;
+            case 473:
+              resolve(RetryState.NORETRY_DELETE);
+              break;
+            default:
+              try {
+                const parsed = JSON.parse(response.body)
+                parsed.statusCode = response.statusCode
+                reject(parsed)
+                return
+              } catch (error) {
+                reject({
+                  statusCode: response.statusCode,
+                  body: response.body
+                })
+                return
+              }
+          }
+        } else {
+          resolve(RetryState.NORETRY_DELETE);
+          return
+        }
+      } catch (error) {
+        console.error(error.message);
+        reject(error);
+      }
+    })
+  }
 
-    // Generate screenshots from mp4
-    let thumbnails = [];
-    try {
-      thumbnails = await generateScreenshots( transmuxFile, 10 );
-    } catch ( error ) {
-      console.log( chalk.redBright( `Thumbnail generation failed!` ) );
-      console.log( error );
-      thumbnails = [];
-    }
-
-
-    console.log( `Delete source FLV file...` );
-
+  async deleteFLV(file: string) {
     // Delete source FLV file
     try {
-      await fsp.unlink( file );
-      console.log( chalk.greenBright( `${file} deleted.` ) );
-    } catch ( error ) {
-      console.log( chalk.redBright( `Archive source flv delete failed... This is bad..` ) );
-      console.log( error );
-    }
-
-
-
-    // S3 Debug
-    console.log( `Get S3 debug info...` );
-    await stackpaths3.listBuckets();
-
-
-    // S3 Upload thumbnails
-    let s3Thumbnails: string[] = [];
-    if ( thumbnails && thumbnails.length > 0 ) {
-      console.log( `Uploading thumbnails to S3 bucket...` );
-
-      // Upload thumbnails to S3
-      try {
-        s3Thumbnails = await Promise.all(
-          thumbnails.map( async thumbnail => {
-            return (await stackpaths3.uploadImage( thumbnail, service )).location;
-          })
-        );
-      } catch ( error ) {
-        console.log( chalk.redBright( `Thumbnail upload failed... This is probably bad..` ) );
-        console.log( error );
-      }
-
-      // Delete local thumbnail files
-      console.log( `Delete thumbnails on local server...` );
-
-      // Delete thumbnails
-      try {
-        await Promise.all(
-          thumbnails.map( async thumbnail => {
-            await fsp.unlink( thumbnail );
-            console.log( chalk.greenBright( `${thumbnail} deleted.` ) );
-          })
-        );
-      } catch ( error ) {
-        console.log( chalk.redBright( `Thumbnail delete failed... This is probably bad..` ) );
-        console.log( error );
-      }
-    } else {
-      s3Thumbnails = null;
-    }
-
-
-    // S3 Upload video
-    console.log( `Upload mp4 to S3 bucket...` );
-    const s3File = await stackpaths3.upload( transmuxFile, service );
-
-    // Delete local mp4 file
-    console.log( `Delete transmuxed mp4 file on local server...` );
-
-    // Delete source mp4 file
-    try {
-      await fsp.unlink( transmuxFile );
-      console.log( chalk.greenBright( `${transmuxFile} deleted.` ) );
-    } catch ( error ) {
-      console.log( chalk.redBright( `Archive source mp4 delete failed... This is bad..` ) );
-      console.log( error );
-    }
-
-
-    // Finished processing!
-    return {
-      file: s3File.location,
-      key: s3File.key,
-      type: 'mp4',
-      duration: transmuxData.video.duration,
-      thumbnails: s3Thumbnails,
-      channel: channel,
-      service: service,
-      fileSize: transmuxData.format.size,
-      ffprobe: {
-        videoData: transmuxData.video,
-        audioData: transmuxData.audio,
-      },
-    };
-  }
-
-  async transferArchive ( file: string, fileName: string ) {
-    try {
-      // Connect to other server
-      const scpClient = await Client({
-        host: transcodeServer,
-        port: 22,
-        username: transcoderUser,
-        privateKey: transcoderPrivateKey,
-      });
-
-      // Transfer file via SCP
-      await scpClient.uploadFile( file, `videos_to_transcode/${fileName}` );
-
-      // Close connection
-      scpClient.close();
+      await fsp.unlink(file);
+      console.log(chalk.greenBright(`${file} deleted.`));
     } catch (error) {
-      console.error(error.message);
-    }
-  }
-
-  async notifyTranscodeServer ( filename: string, channelId: string ) {
-    try {
-      const options = {
-        form: {
-          file_name: filename,
-          channel_id: channelId,
-          secret: 'TODO-USE-SOME-ENV-VAR', // TODO: use an env var here
-        },
-      };
-      await rp.post( 'https://transcoder.live.odysee.com/stream', options );
-    } catch ( error ) {
-      console.error( error.message );
-    }
-  }
-
-  async deleteFLV ( file: string ) {
-    // Delete source FLV file
-    try {
-      await fsp.unlink( file );
-      console.log( chalk.greenBright( `${file} deleted.` ) );
-    } catch ( error ) {
-      console.log( chalk.redBright( `${file}: Replay source flv delete failed... This is bad..` ) );
-      console.log( error );
+      console.log(chalk.redBright(`${file}: Replay source flv delete failed... This is bad..`));
+      console.log(error);
     }
   }
 }

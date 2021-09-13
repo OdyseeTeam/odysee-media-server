@@ -12,16 +12,16 @@ Updating Server:
 (an easier method is available via [server-scritps](/server-scripts))
 
 ```bash
-docker pull bitwavetv/bms-api-server:latest
-docker pull bitwavetv/bms-nginx-server:latest
+docker pull lbry/livestream-api:latest
+docker pull lbry/livestream-nginx:latest
 docker-compose up --build -d
 ```
 
 Updating Dev Server:
 
 ```bash
-docker pull bitwavetv/bms-api-server:dev
-docker pull bitwavetv/bms-nginx-server:dev
+docker pull lbry/livestream-api:dev
+docker pull lbry/livestream-ngix:dev
 docker-compose up --build -d
 ```
 
@@ -41,7 +41,7 @@ docker-compose logs --tail 25 -f
 Build NGINX server:
 ```bash
 cd nginx-server
-docker build -t bitwavetv/bms-nginx-server:latest .
+docker build -t lbry/livestream-nginx:latest .
 - or -
 docker-compose build
 ```
@@ -49,15 +49,15 @@ docker-compose build
 Build API server:
 ```bash
 cd api-server
-docker build -t bitwavetv/bms-api-server:latest .
+docker build -t lbry/livestream-api:latest .
 - or -
 docker-compose build
 ```
 
 Push updated containers to docker:
 ```bash
-docker push bitwavetv/bms-nginx-server
-docker push bitwavetv/bms-api-server
+docker push lbry/livestream-nginx
+docker push lbry/livestream-api
 ```
 
 Exec bash into running container:
@@ -70,15 +70,15 @@ Docker-Compose start server:
 docker-compose up
 ```
 
-Docker-Compose build & run detatched:
+Docker-Compose build & run detached:
 ```bash
 docker-compose up --build -d
 ```
 
 Update Restart & Show Logs:
 ```bash
-docker pull bitwavetv/bms-api-server && \
-docker pull bitwavetv/bms-nginx-server && \
+docker pull lbry/livestream-api && \
+docker pull lbry/livestream-nginx && \
 docker-compose up --build -d && \
 docker-compose restart && \
 docker-compose logs --tail 25 -f
@@ -107,10 +107,10 @@ Push NGINX Server image, tagged as `dev`.
 Build ALL Services, tagged as `dev`.
 
 ### `docker-push:dev`
-Push ALL Servicers image, tagged as `dev`.
+Push ALL Services image, tagged as `dev`.
 
 ### `docker-publish:dev`
-(This is the most convient command)  
+(This is the most convenient command)  
 One shot build and push ALL services, tagged as `dev`.  
 
 
@@ -126,7 +126,7 @@ Updates and restarts ingestion server.
 
 
 ### [bms-logs](/server-scripts/README.md#bms-logs)
-Show docker logs for bitwave-media-server
+Show docker logs for odysee-media-server
 
 
 ---
@@ -140,13 +140,13 @@ Cache Builder:
  ```bash
  docker build \
     --target builder \
-    -t bitwavetv/bitwave-media-server:builder .
+    -t lbry/bitwave-media-server:builder .
  ```
  
  Build from cache:
 ```bash
 docker build \
-    --cache-from bitwavetv/bitwave-media-server:builder \
-    --cache-from bitwavetv/bitwave-media-server:latest \
-    -t bitwavetv/bitwave-media-server:latest .
+    --cache-from lbry/bitwave-media-server:builder \
+    --cache-from lbry/bitwave-media-server:latest \
+    -t lbry/bitwave-media-server:latest .
 ``` 

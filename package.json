@@ -1,32 +1,29 @@
 {
-  "name": "bitwave-media-server",
+  "name": "odysee-media-server",
   "version": "3.2.0",
-  "description": "bitwave media server",
+  "description": "odysee media server",
   "main": "src/index.js",
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w",
     "dev": "npx nodemon ./build",
     "start": "node ./build",
-    "old:docker:build": "docker build --cache-from bitwavetv/bitwave-media-server:builder --cache-from bitwavetv/bitwave-media-server:latest -t bitwavetv/bitwave-media-server:latest .",
-    "old:docker:up": "docker-compose up",
-    "old:docker:publish": "docker push bitwavetv/bitwave-media-server:latest",
-    "docker-build:dev:api": "cd ./api-server && docker build -t bitwavetv/bms-api-server:dev .",
-    "docker-build:dev:nginx": "cd ./nginx-server && docker build -t bitwavetv/bms-nginx-server:dev .",
-    "docker-push:dev:api": "docker push bitwavetv/bms-api-server:dev",
-    "docker-push:dev:nginx": "docker push bitwavetv/bms-nginx-server:dev",
-    "docker-build:dev": "npm run docker-build:dev:api && npm run docker-build:dev:nginx",
-    "docker-push:dev": "npm run docker-push:dev:api && npm run docker-push:dev:nginx",
-    "docker-publish:dev": "npm run docker-build:dev && npm run docker-push:dev"
+    "docker-build:api": "cd ./api-server && docker build -t lbry/livestream-api:latest .",
+    "docker-build:nginx": "cd ./nginx-server && docker build -t lbry/livestream-nginx:latest .",
+    "docker-push:api": "docker push lbry/livestream-api:latest",
+    "docker-push:nginx": "docker push lbry/livestream-nginx:latest",
+    "docker-build": "npm run docker-build:api && npm run docker-build:nginx",
+    "docker-push": "npm run docker-push:api && npm run docker-push:nginx",
+    "docker-publish": "npm run docker-build && npm run docker-push"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bitwave-tv/bitwave-media-server.git"
+    "url": "git+https://github.com/lbryio/odysee-media-server.git"
   },
   "author": "dispatch",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/bitwave-tv/bitwave-media-server/issues"
+    "url": "https://github.com/lbryio/odysee-media-server/issues"
   },
-  "homepage": "https://github.com/bitwave-tv/bitwave-media-server#readme"
+  "homepage": "https://github.com/lbryio/odysee-media-server#readme"
 }
