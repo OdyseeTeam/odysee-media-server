@@ -481,10 +481,10 @@ router.post(
 router.post(
   '/transcoder/start',
 
-  extractToken,
+  /*extractToken,
   validateUserToken(),
   validate,
-  authenticatedRequest,
+  authenticatedRequest,*/
 
   async ( req, res ) => {
     const user = req.body.user;

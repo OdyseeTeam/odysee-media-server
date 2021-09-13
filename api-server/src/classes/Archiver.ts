@@ -1,7 +1,7 @@
 // Created by xander on 12/30/2019
 
 import * as admin from 'firebase-admin';
-import { promises as fsp } from 'fs';
+import { promises as fsp, readFileSync } from 'fs';
 import * as path from 'path';
 import * as chalk from 'chalk';
 import * as FfmpegCommand from 'fluent-ffmpeg';
@@ -9,6 +9,11 @@ import { ffprobe, FfprobeData, FfprobeStream } from 'fluent-ffmpeg';
 
 import { stackpaths3 } from '../services/s3Storage';
 import * as rp from 'request-promise';
+import Client from 'node-scp';
+
+const transcoderPrivateKey = readFileSync('../../creds/ssh-key.ppk');
+const transcodeServer = 'transcoder.live.odysee.com';
+const transcoderUser = 'lbry';
 
 type IStreamService = 'odysee' | 'bitwave';
 
@@ -118,6 +123,33 @@ class ArchiveManager {
   async onArchiveEnd ( user: string, recordName: string, fileLocation: string ): Promise<void> {
     // Log debug info
     console.log( `[${recordName}] Replay for ${user} saved to ${fileLocation}.` );
+
+    // Extract filename from file location
+    // path.parse(fileLocation).base;
+    const fileName = path.basename( fileLocation );
+
+    // Transfer FLV file to replay transcoder
+    console.log( `[${fileName}] Transferring FLV to Replay Transcode Server...` );
+
+    await this.transferArchive( fileLocation, fileName );
+
+    // Notify transcoding server of new replay
+    console.log( `[${fileName}] Notifying Replay Transcode Server of new replay...` );
+    await this.notifyTranscodeServer( fileName, user );
+
+    // Delete FLV file after successful transmux on transcoding server
+    console.log( `[${fileLocation}] will now be deleted...` );
+    await this.deleteFLV( fileLocation );
+
+    console.log( `[${fileName}] Replay processing compete!` );
+
+    return;
+
+
+    // --------------------------------------------
+    // --- USED TO TRANSMUX ON INGESTION SERVER ---
+    // --------------------------------------------
+
     console.log( `[${recordName}] Converting FLV to MP4 and generating thumbnails...` );
 
     // Transmux file
@@ -128,6 +160,11 @@ class ArchiveManager {
     const rSec: number = Math.trunc( result.duration ) % 60;
     console.log( `[${recordName}] Replay is ${rMin}:${rSec}` );
 
+    // disable processing replays longer than 6 hours
+    if ( rMin > 360 ) {
+      console.log(`Replay is too long to process: ${fileLocation}`);
+      return;
+    }
 
     // use recordName to detect which platform's service was used
     const service: IStreamService = recordName === 'odysee'? 'odysee' : 'bitwave';
@@ -201,6 +238,12 @@ class ArchiveManager {
       ffmpeg.outputOptions([
         '-codec:a copy', // Audio (copy)
         '-codec:v copy', // Video (copy)
+
+        // Video (transcode)
+        // '-c:v libx264',
+        // '-preset:v superfast', // preset
+        // '-crf 35', // Quality level
+
       ]);
 
       ffmpeg.renice( 5 );
@@ -520,6 +563,51 @@ class ArchiveManager {
     };
   }
 
+  async transferArchive ( file: string, fileName: string ) {
+    try {
+      // Connect to other server
+      const scpClient = await Client({
+        host: transcodeServer,
+        port: 22,
+        username: transcoderUser,
+        privateKey: transcoderPrivateKey,
+      });
+
+      // Transfer file via SCP
+      await scpClient.uploadFile( file, `videos_to_transcode/${fileName}` );
+
+      // Close connection
+      scpClient.close();
+    } catch (error) {
+      console.error(error.message);
+    }
+  }
+
+  async notifyTranscodeServer ( filename: string, channelId: string ) {
+    try {
+      const options = {
+        form: {
+          file_name: filename,
+          channel_id: channelId,
+          secret: 'TODO-USE-SOME-ENV-VAR', // TODO: use an env var here
+        },
+      };
+      await rp.post( 'https://transcoder.live.odysee.com/stream', options );
+    } catch ( error ) {
+      console.error( error.message );
+    }
+  }
+
+  async deleteFLV ( file: string ) {
+    // Delete source FLV file
+    try {
+      await fsp.unlink( file );
+      console.log( chalk.greenBright( `${file} deleted.` ) );
+    } catch ( error ) {
+      console.log( chalk.redBright( `${file}: Replay source flv delete failed... This is bad..` ) );
+      console.log( error );
+    }
+  }
 }
 
 export const archiver = new ArchiveManager();
