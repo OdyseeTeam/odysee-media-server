@@ -76,10 +76,18 @@ router.post(
     // block new connections if user is already connected
     const streamer = serverData.getStreamer( name );
     if ( streamer ) {
-      apiLogger.error( `Streamer '${name}' is already connected! Denying new connection.` );
-      return res
-        .status( 403 )
-        .send( `Another stream is already in progress.` );
+      // Streamer Data
+      let streamerData = serverData.getStreamerData( name );
+
+      // Odysee streams
+      if ( streamerData && streamerData.isOdysee ) {
+        apiLogger.error( `Odysee Streamer '${name}' is already connected!` );
+      } else {
+        apiLogger.error( `Streamer '${name}' is already connected! Denying new connection.` );
+        return res
+          .status( 403 )
+          .send( `Another stream is already in progress.` );
+      }
     }
 
 
@@ -90,6 +98,7 @@ router.post(
     const signatureTs = req.body.t;
 
     if ( hexData && signature && signatureTs ) {
+      // Verify Odysee stream key
       const odyseeValidKey = await odyseeStream.verifySignature(name, hexData, signature, signatureTs);
 
       if ( odyseeValidKey ) {
@@ -258,12 +267,23 @@ router.post(
     if ( name ) {
       const timer: Timeout = setTimeout( async () => {
         apiLogger.info(`[${app}] ${chalk.cyanBright.bold(name)} is now ${chalk.greenBright.bold('sending notification request')}.`);
+
         // Send notifications
         const options = { form: { streamer: name } };
         try {
-          await rp.post( 'https://api.bitwave.tv/api/notification/live', options );
+          // Get streamer data (used to detect Odysee streams)
+          let streamer = serverData.getStreamerData( name );
+
+          // Odysee streams
+          if ( streamer && streamer.isOdysee ) {
+            await odyseeStream.sendNotification( name );
+          }
+          // Bitwave (non-odysee) streams
+          else {
+            await rp.post( 'https://api.bitwave.tv/api/notification/live', options );
+          }
         } catch ( error ) {
-          console.error( error.message );
+          console.error( `Send notification failed: ${error.message}` );
         }
 
         // remove finished LIVE timer
@@ -293,28 +313,26 @@ router.post(
     const name = req.body.name;
 
     // Streamer has  fully disconnected
-    if ( app === 'live' ) {
-      // Prevent timer from firing when stream goes offline
-      liveTimers
-        .map( val => {
-          if ( val.user.toLowerCase() === name.toLowerCase() )
-            clearTimeout( val.timer );
-          else
-            return val;
-        });
+    if ( app === 'live' || app === 'hls' ) {
 
       // Prevent live timers from firing if we go offline
       liveTimers = liveTimers
         .filter( val => {
-          if ( val.user.toLowerCase() === name.toLowerCase() ) clearTimeout( val.timer );
-          else return val;
+          if ( val.user.toLowerCase() === name.toLowerCase() ) {
+            clearTimeout( val.timer );
+            return false;
+          }
+          return true;
         });
 
       // Prevent notifications timers from firing if we go offline too soon
       notificationTimers = notificationTimers
         .filter( val => {
-          if ( val.user.toLowerCase() === name.toLowerCase() ) clearTimeout( val.timer );
-          else return val;
+          if ( val.user.toLowerCase() === name.toLowerCase() ) {
+            clearTimeout( val.timer );
+            return false;
+          }
+          return true;
         });
 
 
@@ -323,7 +341,7 @@ router.post(
 
       //---------------------------------------------------
       // Bitwave (non-odysee) streams
-      if ( !streamer.isOdysee ) {
+      if ( !streamer || !streamer.isOdysee ) {
         // Set offline status
         apiLogger.info(`Setting DB live state to false for: ${name}`);
         await streamauth.setLiveStatus( name, false );
@@ -332,7 +350,7 @@ router.post(
 
       //---------------------------------------------------
       // Odysee streams
-      if ( streamer.isOdysee ) {
+      if ( streamer && streamer.isOdysee ) {
         apiLogger.info(`Setting DB live state to false for odysee stream: ${name}`);
         await odyseeStream.setLiveStatus( name, false );
       }
@@ -356,10 +374,34 @@ router.post(
     const app  = req.body.app;
     const name = req.body.name;
 
+    apiLogger.info( `transcode/publish::user - ${user}` );
+    apiLogger.info( `transcode/publish::app - ${app}` );
+    apiLogger.info( `transcode/publish::name - ${name}` );
+
     if ( user ) {
+      // Get streamer data (used to detect Odysee streams)
+      const streamer = serverData.getStreamerData( user );
+
       const timer: Timeout = setTimeout( async () => {
-        await streamauth.setTranscodeStatus( user, true, app );
+
+        // Update stream after transcoder started
+
+        //---------------------------------------------------
+        // Bitwave (non-odysee) streams
+        if ( !streamer || !streamer.isOdysee ) {
+          await streamauth.setTranscodeStatus( user, true, app );
+        }
+        //---------------------------------------------------
+
+        //---------------------------------------------------
+        // Odysee streams
+        if ( streamer && streamer.isOdysee ) {
+          await odyseeStream.setTranscodeStatus( user, true, app );
+        }
+        //---------------------------------------------------
+
         apiLogger.info(`[${app}] ${chalk.cyanBright.bold(user)} is now ${chalk.greenBright.bold('transcoded')}.`);
+
         // remove timer
         liveTimers = liveTimers.filter( val => {
           return val.user !== `${name.toLowerCase()}-transcoder`;
@@ -389,6 +431,10 @@ router.post(
     const name = req.body.name;
 
     if ( user ) {
+      // Get streamer data (used to detect Odysee streams)
+      const streamer = serverData.getStreamerData( user );
+
+      // Update stream after transcoder started
       apiLogger.info(`[${app}] ${chalk.cyanBright.bold(user)} has disconnected from ${chalk.redBright.bold('transcoder')}.`);
 
       // Prevent live timers from firing if we go offline
@@ -435,15 +481,19 @@ router.post(
 router.post(
   '/transcoder/start',
 
-  extractToken,
+  /*extractToken,
   validateUserToken(),
   validate,
-  authenticatedRequest,
+  authenticatedRequest,*/
 
   async ( req, res ) => {
     const user = req.body.user;
     const enable144p = req.body.enable144p ?? false;
     const enable480p = req.body.enable480p ?? true;
+
+    apiLogger.info( `transcode/start: ${user}` );
+    apiLogger.info( `transcode/144p: ${enable144p}` );
+    apiLogger.info( `transcode/480p: ${enable480p}` );
 
     // Attempt to get case sensitive username
     let streamer = serverData.getStreamer( user );
@@ -451,14 +501,27 @@ router.post(
     // Failed to find user on server
     if ( !streamer ) {
       apiLogger.info( `${chalk.redBright( user )} not found - failed to transcode...` );
-      streamer = user;
+      // streamer = user;
+
+      return res.send({
+        message: `${streamer} is not connected.`,
+        data: {
+          streamer: streamer,
+          user: user,
+          enable144p: enable144p,
+          enable480p: enable480p,
+        }
+      });
     }
 
     // User found - Start transcoding
     apiLogger.info( `${chalk.cyanBright.bold( streamer )} will be transcoded... Starting transcoders...` );
     transcoder.startTranscoder( streamer, enable144p, enable480p );
 
-    res.send( `${streamer} is now being transcoded.` );
+    res.send({
+      message: `${streamer} is now being transcoded.`,
+      data: streamer,
+    });
   },
 );
 
@@ -488,15 +551,20 @@ router.post(
     // Stop transcoding
     apiLogger.info( `${chalk.cyanBright.bold(streamer)} will no longer be transcoded.` );
 
-    // Revert streamer endpoint
+    // Revert streamer endpoint for any matching streamer, bitwave or odysee
+    await odyseeStream.setTranscodeStatus( streamer, false );
     await streamauth.setTranscodeStatus( streamer, false );
+
     apiLogger.info( `${chalk.cyanBright.bold( streamer )}'s endpoint has been reverted` );
 
     // Stop transcode ffmpeg process
     transcoder.stopTranscoder( streamer );
     apiLogger.info( `${chalk.cyanBright.bold( streamer )}'s transcoding process has been stopped.` );
 
-    res.send(`${ streamer } is no longer being transcoded.`);
+    res.send({
+      message: `${ streamer } is no longer being transcoded.`,
+      data: streamer,
+    });
   },
 );
 
@@ -852,7 +920,7 @@ router.post(
     const service = req.body.service;
     const result  = req.body.result;
 
-    console.log( `Saving replay for ${channel} on ${service}:\n`, result );
+    console.log( `Saving replay for ${channel} on ${service}:\n` );
 
     // Save archive via bitwave API
     if ( service === 'bitwave' ) {

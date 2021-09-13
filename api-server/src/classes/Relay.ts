@@ -43,7 +43,7 @@ class StreamRelay {
     // Waste some time probing the input for up to 15 seconds
     try {
       const probeResult = await this.probeInputAsync( inputStream );
-      relayLogger.info( `Probe returned: ${probeResult}` );
+      relayLogger.info( `[${user}] Probe returned: ${probeResult}` );
     } catch ( error ) {
       relayLogger.error( error );
       return false;
@@ -127,6 +127,7 @@ class StreamRelay {
       '-vsync 0',
       '-copyts',
       '-start_at_zero',
+      '-movflags faststart',
 
       '-x264opts no-scenecut',
     ]);
