@@ -119,7 +119,7 @@ export default class OdyseeStream {
     // Submit API request to Odysee API
     let response = undefined;
     try {
-      response = await rp.post( 'https://api.bitwave.tv/v1/odysee/send-notification', options );
+      response = await rp.post( 'https://api.live.odysee.com/v1/odysee/send-notification', options );
       // Log Odysee API request
       log.info( `SENT: ${JSON.stringify( body )}`,  )
       log.info( `RESPONSE: ${JSON.stringify( response )}` );
