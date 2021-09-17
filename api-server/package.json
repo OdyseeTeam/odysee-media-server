@@ -1,28 +1,28 @@
 {
-  "name": "bitwave-media-server",
+  "name": "odysee-media-server",
   "version": "3.2.0",
-  "description": "bitwave media server",
+  "description": "odysee media server",
   "main": "src/index.js",
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w",
     "dev": "npx nodemon ./build",
     "start": "node ./build",
-    "docker:build": "docker build -t bitwavetv/bms-api-server:latest .",
+    "docker:build": "docker build -t lbry/livestream-api:latest .",
     "docker:up": "docker-compose up",
-    "docker:push": "docker push bitwavetv/bms-api-server:latest",
+    "docker:push": "docker push lbry/livestream-api:latest",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bitwave-tv/bitwave-media-server.git"
+    "url": "git+https://github.com/lbryio/odysee-media-server.git"
   },
   "author": "dispatch",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/bitwave-tv/bitwave-media-server/issues"
+    "url": "https://github.com/lbryio/odysee-media-server/issues"
   },
-  "homepage": "https://github.com/bitwave-tv/bitwave-media-server#readme",
+  "homepage": "https://github.com/lbryio/odysee-media-server#readme",
   "dependencies": {
     "aws-sdk": "^2.881.0",
     "bandwidth-throttle-stream": "^1.1.1",

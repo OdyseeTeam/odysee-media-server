@@ -5,9 +5,9 @@ services:
 
   # NGINX-RTMP Server Configuration
   nginx-server:
-    container_name: bms-nginx-server
-    image: bitwavetv/bms-nginx-server:latest
-    # build: '../nginx-server'
+    container_name: bms-nginx
+    image: lbry/livestream-nginx:uncommitted-changes
+      # build: '../nginx-server'
 
     ports:
       - "8080:8080"
@@ -19,25 +19,24 @@ services:
           - bms-nginx-server
           - nginx-server
 
-    # Mount archives & API creds #
-    # - MODIFY THESE LOCATIONS - #
+    # Mount archives & API creds
     volumes:
-      - /srv/archives:/archives
-      - /srv/creds:/bms-nginx-server/creds
+      - ./archives:/archives
+      - ./.bms-server:/bms-nginx-server/creds
 
     environment:
       - FORCE_COLOR=1
       - BMS_ENV=dev
       - BMS_LOGLEVEL=4
-      - BMS_TIMEZONE=America/Los_Angeles
-      - BMS_SERVER=stream.bitwave.tv      # MODIFY THIS
-      - BMS_CDN=cdn.stream.bitwave.tv     # MODIFY THIS
+      - BMS_TIMEZONE=UTC
+      - BMS_SERVER=stream.odysee.com
+      - BMS_CDN=cdn.odysee.live
 
 
   # API Server Configuration
   api-server:
-    container_name: bms-api-server
-    image: bitwavetv/bms-api-server:latest
+    container_name: bms-api
+    image: lbry/livestream-api:uncommitted-changes
     # build: '../api-server'
 
     ports:
@@ -49,20 +48,20 @@ services:
           - bms-api-server
           - api-server
 
-    # Mount archives & API creds #
-    # - MODIFY THESE LOCATIONS - #
+    # Mount archives & API creds
     volumes:
-      - /srv/archives:/archives
-      - /srv/creds:/api-server/creds
+      - ./archives:/archives
+      - ./.bms-server:/api-server/creds
+      - ./.bms-server:/creds # temporary till xander fixes absolute path in container
 
     environment:
       - FORCE_COLOR=1
       - BMS_ENV=dev
       - BMS_LOGLEVEL=4
-      - BMS_TIMEZONE=America/Los_Angeles
-      - BMS_SERVER=stream.bitwave.tv      # MODIFY THIS
-      - BMS_CDN=cdn.stream.bitwave.tv     # MODIFY THIS
-      - SEVER_SECRET=SECRET               # MODIFY THIS
+      - BMS_TIMEZONE=UTC
+      - BMS_SERVER=stream.odysee.com
+      - BMS_CDN=cdn.odysee.live
+      - SEVER_SECRET=SECRET
 
 
 # Network Definitions

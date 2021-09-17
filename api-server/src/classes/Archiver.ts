@@ -18,12 +18,12 @@ const crypto = require('crypto');
 const fs = require('fs');
 const fsPromises = fs.promises;
 
-type IStreamService = 'odysee' | 'bitwave';
+type IStreamService = 'odysee'|'bitwave';
 
 export interface IArchiveTransmuxed {
   file: string;
   key: string;
-  type: 'flv' | 'mp4';
+  type: 'flv'|'mp4';
   duration: number;
   fileSize: number;
   thumbnails: string[];
@@ -310,12 +310,15 @@ class ArchiveManager {
 
   async notifyTranscodeServer(filename: string, fileLocation: string, channelId: string): Promise<RetryState> {
     return new Promise<RetryState>(async (resolve, reject) => {
-      try {
-        const fileBuffer = fs.readFileSync(fileLocation);
-        const hashSum = crypto.createHash('sha256');
-        hashSum.update(fileBuffer);
-        const hex = hashSum.digest('hex');
 
+      let hash = crypto.createHash('sha256'),
+        stream = fs.createReadStream(fileLocation);
+
+      stream.on('data', _buff => {
+        hash.update(_buff, 'utf8');
+      });
+      stream.on('end', async () => {
+        const hex = hash.digest('hex');
         const options = {
           resolveWithFullResponse: true,
           form: {
@@ -325,50 +328,52 @@ class ArchiveManager {
             sha256: hex,
           },
         };
+        try {
+          const response = await rp.post('https://transcoder.live.odysee.com/stream', options)
 
-        const response = await rp.post('https://transcoder.live.odysee.com/stream', options)
-        /*
-        470 - retry with upload
-        471 - retry without re-uploading
-        472 - do not retry and do not discard video
-        473 - do not retry and discard video
-         */
-        if (response.statusCode >= 300) {
-          switch (response.statusCode) {
-            case 470:
-              resolve(RetryState.RETRY);
-              break;
-            case 471:
-              resolve(RetryState.RETRY_NOUPLOAD);
-              break;
-            case 472:
-              resolve(RetryState.NORETRY_NODELETE);
-              break;
-            case 473:
-              resolve(RetryState.NORETRY_DELETE);
-              break;
-            default:
-              try {
-                const parsed = JSON.parse(response.body)
-                parsed.statusCode = response.statusCode
-                reject(parsed)
-                return
-              } catch (error) {
-                reject({
-                  statusCode: response.statusCode,
-                  body: response.body
-                })
-                return
-              }
+          /*
+          470 - retry with upload
+          471 - retry without re-uploading
+          472 - do not retry and do not discard video
+          473 - do not retry and discard video
+           */
+          if (response.statusCode >= 300) {
+            switch (response.statusCode) {
+              case 470:
+                resolve(RetryState.RETRY);
+                break;
+              case 471:
+                resolve(RetryState.RETRY_NOUPLOAD);
+                break;
+              case 472:
+                resolve(RetryState.NORETRY_NODELETE);
+                break;
+              case 473:
+                resolve(RetryState.NORETRY_DELETE);
+                break;
+              default:
+                try {
+                  const parsed = JSON.parse(response.body)
+                  parsed.statusCode = response.statusCode
+                  reject(parsed)
+                  return
+                } catch (error) {
+                  reject({
+                    statusCode: response.statusCode,
+                    body: response.body
+                  })
+                  return
+                }
+            }
+          } else {
+            resolve(RetryState.NORETRY_DELETE);
+            return
           }
-        } else {
-          resolve(RetryState.NORETRY_DELETE);
-          return
+        } catch (error) {
+          console.error(error.message);
+          reject(error);
         }
-      } catch (error) {
-        console.error(error.message);
-        reject(error);
-      }
+      });
     })
   }
 
