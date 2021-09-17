@@ -6,7 +6,7 @@ services:
   # NGINX-RTMP Server Configuration
   nginx-server:
     container_name: bms-nginx
-    image: lbry/livestream-nginx:uncommitted-changes
+    image: lbry/livestream-nginx:latest
       # build: '../nginx-server'
 
     ports:
@@ -36,7 +36,7 @@ services:
   # API Server Configuration
   api-server:
     container_name: bms-api
-    image: lbry/livestream-api:uncommitted-changes
+    image: lbry/livestream-api:latest
     # build: '../api-server'
 
     ports:
