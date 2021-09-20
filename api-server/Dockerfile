@@ -18,7 +18,11 @@ RUN apt-get update && \
         v4l-utils \
         libv4l-0 \
         libxcb-randr0-dev libxcb-xtest0-dev libxcb-xinerama0-dev libxcb-shape0-dev libxcb-xkb-dev \
-        alsa-utils
+        alsa-utils \
+        python \
+        make \
+        cmake \
+        g++
 
 RUN apt-get remove -y \
         curl && \
