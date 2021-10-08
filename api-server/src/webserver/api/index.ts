@@ -82,6 +82,9 @@ router.post(
       // Odysee streams
       if ( streamerData && streamerData.isOdysee ) {
         apiLogger.error( `Odysee Streamer '${name}' is already connected!` );
+        return res
+          .status( 422 )
+          .send( `You are already streaming!` );
       } else {
         apiLogger.error( `Streamer '${name}' is already connected! Denying new connection.` );
         return res
