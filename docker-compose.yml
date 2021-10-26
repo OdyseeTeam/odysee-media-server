@@ -62,7 +62,7 @@ services:
       - BMS_SERVER=stream.odysee.com
       - BMS_CDN=cdn.odysee.live
       - SEVER_SECRET=SECRET
-
+      - ADMIN_TOKEN=SECRET2
 
 # Network Definitions
 networks:

@@ -253,6 +253,54 @@ router.post(
   },
 );
 
+router.post(
+  '/stream/kill/:claimId',
+  async (req, res) => {
+    const channelClaimID = req.params.claimId;
+    const hexData = req.body.d;
+    const signature = req.body.s;
+    const signatureTs = req.body.t;
+    const adminToken = req.body.admin;
+
+    if ((hexData && signature && signatureTs) || adminToken) {
+      let odyseeValidKey = false;
+      let channel = "";
+      if (adminToken && adminToken === process.env.ADMIN_TOKEN) {
+        odyseeValidKey = true;
+        channel = channelClaimID;
+      } else {
+        // Verify Odysee stream key
+        odyseeValidKey = await odyseeStream.verifySignature(channelClaimID, hexData, signature, signatureTs);
+      }
+
+      if (odyseeValidKey) {
+        if (channel ===""){
+          channel = fromHex(hexData);
+        }
+        apiLogger.info(`Odysee StreamKey for ${channel} is valid. [200]`)
+
+        // Set offline status
+        await streamauth.setLiveStatus(channelClaimID, false);
+
+        apiLogger.info(`${channelClaimID} forced ${chalk.redBright('OFFLINE')}...`);
+        res
+          .status(200)
+          .send(`${channelClaimID} stream force killed.`);
+        return;
+      } else {
+        apiLogger.info(`Odysee StreamKey for ${channelClaimID} is invalid. [403]`)
+        res
+          .status(403)
+          .send(`${channelClaimID} denied.`);
+        return;
+      }
+    }
+    res
+      .status(400)
+      .send(`not enough parameters`);
+    return;
+  }
+)
 
 /**
  * Publish HLS stream, send notifications

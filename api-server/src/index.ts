@@ -26,7 +26,7 @@ import logger from './classes/Logger';
 const webLogger = logger( 'BOOT' );
 
 // show start message
-webLogger.info ( `Starting [bitwave.tv] Media Server ${chalk.bold.greenBright (`v${packageJson.version}`)}` );
+webLogger.info ( `Starting [odysee.com] Media Server ${chalk.bold.greenBright (`v${packageJson.version}`)}` );
 
 const fontOptions = {
   font: 'simple',
@@ -34,7 +34,7 @@ const fontOptions = {
   space: false,
 };
 
-console.log ( chalk.bold.greenBright ( CFonts.render('bitwave.tv',fontOptions).string ) );
+console.log ( chalk.bold.greenBright ( CFonts.render('odysee.com',fontOptions).string ) );
 console.log ( chalk.bold.cyan        ( CFonts.render('NODE', fontOptions).string ) + '\n' );
 
 
