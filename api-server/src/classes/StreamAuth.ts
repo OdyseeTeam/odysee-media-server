@@ -103,7 +103,7 @@ class StreamAuth {
    * @return {Promise<void>}
    */
   async setLiveStatus ( username: string, state: boolean ): Promise<void> {
-    const streamRef = admin.firestore().collection( 'streams' ).doc( username.toLowerCase() );
+    const streamRef = admin.firestore().collection( 'odysee-streams' ).doc( username.toLowerCase() );
     const doc = await streamRef.get();
 
     if ( !doc.exists ) {
